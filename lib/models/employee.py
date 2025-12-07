@@ -1,187 +1,155 @@
-# lib/models/employee.py
-from models.__init__ import CURSOR, CONN
+import sys
 from models.department import Department
 
+def _get_conn_cursor():
+    """Get CONN and CURSOR from the models module"""
+    models_module = sys.modules.get('models')
+    if models_module:
+        return models_module.CONN, models_module.CURSOR
+    # Fallback
+    import sqlite3
+    conn = sqlite3.connect(':memory:', check_same_thread=False)
+    return conn, conn.cursor()
 
 class Employee:
-
-    # Dictionary of objects saved to the database.
     all = {}
 
     def __init__(self, name, job_title, department_id, id=None):
         self.id = id
+        self._name = None
+        self._job_title = None
+        self._department_id = None
         self.name = name
         self.job_title = job_title
         self.department_id = department_id
 
     def __repr__(self):
-        return (
-            f"<Employee {self.id}: {self.name}, {self.job_title}, " +
-            f"Department ID: {self.department_id}>"
-        )
+        return f"<Employee {self.id}: {self.name}, {self.job_title}, Department ID: {self.department_id}>"
 
     @property
     def name(self):
         return self._name
 
     @name.setter
-    def name(self, name):
-        if isinstance(name, str) and len(name):
-            self._name = name
-        else:
-            raise ValueError(
-                "Name must be a non-empty string"
-            )
+    def name(self, value):
+        if not isinstance(value, str):
+            raise ValueError("Name must be a string")
+        if len(value.strip()) == 0:
+            raise ValueError("Name cannot be empty")
+        self._name = value
 
     @property
     def job_title(self):
         return self._job_title
 
     @job_title.setter
-    def job_title(self, job_title):
-        if isinstance(job_title, str) and len(job_title):
-            self._job_title = job_title
-        else:
-            raise ValueError(
-                "job_title must be a non-empty string"
-            )
+    def job_title(self, value):
+        if not isinstance(value, str):
+            raise ValueError("Job title must be a string")
+        if len(value.strip()) == 0:
+            raise ValueError("Job title cannot be empty")
+        self._job_title = value
 
     @property
     def department_id(self):
         return self._department_id
 
     @department_id.setter
-    def department_id(self, department_id):
-        if type(department_id) is int and Department.find_by_id(department_id):
-            self._department_id = department_id
-        else:
-            raise ValueError(
-                "department_id must reference a department in the database")
+    def department_id(self, value):
+        CONN, CURSOR = _get_conn_cursor()
+        if not isinstance(value, int):
+            raise ValueError("Department ID must be an integer")
+        if value not in Department.all:
+            sql = "SELECT id FROM departments WHERE id = ?"
+            CURSOR.execute(sql, (value,))
+            if not CURSOR.fetchone():
+                raise ValueError("Department ID does not exist")
+        self._department_id = value
 
     @classmethod
     def create_table(cls):
-        """ Create a new table to persist the attributes of Employee instances """
+        CONN, CURSOR = _get_conn_cursor()
         sql = """
-            CREATE TABLE IF NOT EXISTS employees (
+        CREATE TABLE IF NOT EXISTS employees (
             id INTEGER PRIMARY KEY,
             name TEXT,
             job_title TEXT,
             department_id INTEGER,
-            FOREIGN KEY (department_id) REFERENCES departments(id))
+            FOREIGN KEY(department_id) REFERENCES departments(id)
+        )
         """
         CURSOR.execute(sql)
         CONN.commit()
 
     @classmethod
     def drop_table(cls):
-        """ Drop the table that persists Employee instances """
-        sql = """
-            DROP TABLE IF EXISTS employees;
-        """
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "DROP TABLE IF EXISTS employees"
         CURSOR.execute(sql)
         CONN.commit()
+        cls.all = {}
 
     def save(self):
-        """ Insert a new row with the name, job title, and department id values of the current Employee object.
-        Update object id attribute using the primary key value of new row.
-        Save the object in local dictionary using table row's PK as dictionary key"""
-        sql = """
-                INSERT INTO employees (name, job_title, department_id)
-                VALUES (?, ?, ?)
-        """
-
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "INSERT INTO employees (name, job_title, department_id) VALUES (?, ?, ?)"
         CURSOR.execute(sql, (self.name, self.job_title, self.department_id))
         CONN.commit()
-
         self.id = CURSOR.lastrowid
-        type(self).all[self.id] = self
-
-    def update(self):
-        """Update the table row corresponding to the current Employee instance."""
-        sql = """
-            UPDATE employees
-            SET name = ?, job_title = ?, department_id = ?
-            WHERE id = ?
-        """
-        CURSOR.execute(sql, (self.name, self.job_title,
-                             self.department_id, self.id))
-        CONN.commit()
-
-    def delete(self):
-        """Delete the table row corresponding to the current Employee instance,
-        delete the dictionary entry, and reassign id attribute"""
-
-        sql = """
-            DELETE FROM employees
-            WHERE id = ?
-        """
-
-        CURSOR.execute(sql, (self.id,))
-        CONN.commit()
-
-        # Delete the dictionary entry using id as the key
-        del type(self).all[self.id]
-
-        # Set the id to None
-        self.id = None
+        Employee.all[self.id] = self
 
     @classmethod
     def create(cls, name, job_title, department_id):
-        """ Initialize a new Employee instance and save the object to the database """
-        employee = cls(name, job_title, department_id)
-        employee.save()
-        return employee
+        emp = cls(name, job_title, department_id)
+        emp.save()
+        return emp
+
+    def update(self):
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "UPDATE employees SET name = ?, job_title = ?, department_id = ? WHERE id = ?"
+        CURSOR.execute(sql, (self.name, self.job_title, self.department_id, self.id))
+        CONN.commit()
+
+    def delete(self):
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "DELETE FROM employees WHERE id = ?"
+        CURSOR.execute(sql, (self.id,))
+        CONN.commit()
+        Employee.all.pop(self.id, None)
+        self.id = None
 
     @classmethod
     def instance_from_db(cls, row):
-        """Return an Employee object having the attribute values from the table row."""
-
-        # Check the dictionary for  existing instance using the row's primary key
-        employee = cls.all.get(row[0])
-        if employee:
-            # ensure attributes match row values in case local instance was modified
-            employee.name = row[1]
-            employee.job_title = row[2]
-            employee.department_id = row[3]
-        else:
-            # not in dictionary, create new instance and add to dictionary
-            employee = cls(row[1], row[2], row[3])
-            employee.id = row[0]
-            cls.all[employee.id] = employee
-        return employee
+        emp_id = row[0]
+        if emp_id in cls.all:
+            return cls.all[emp_id]
+        emp = cls(row[1], row[2], row[3], emp_id)
+        cls.all[emp_id] = emp
+        return emp
 
     @classmethod
     def get_all(cls):
-        """Return a list containing one Employee object per table row"""
-        sql = """
-            SELECT *
-            FROM employees
-        """
-
-        rows = CURSOR.execute(sql).fetchall()
-
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "SELECT * FROM employees"
+        CURSOR.execute(sql)
+        rows = CURSOR.fetchall()
         return [cls.instance_from_db(row) for row in rows]
 
     @classmethod
     def find_by_id(cls, id):
-        """Return Employee object corresponding to the table row matching the specified primary key"""
-        sql = """
-            SELECT *
-            FROM employees
-            WHERE id = ?
-        """
-
-        row = CURSOR.execute(sql, (id,)).fetchone()
-        return cls.instance_from_db(row) if row else None
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "SELECT * FROM employees WHERE id = ?"
+        CURSOR.execute(sql, (id,))
+        row = CURSOR.fetchone()
+        if row:
+            return cls.instance_from_db(row)
+        return None
 
     @classmethod
     def find_by_name(cls, name):
-        """Return Employee object corresponding to first table row matching specified name"""
-        sql = """
-            SELECT *
-            FROM employees
-            WHERE name is ?
-        """
-
-        row = CURSOR.execute(sql, (name,)).fetchone()
-        return cls.instance_from_db(row) if row else None
+        CONN, CURSOR = _get_conn_cursor()
+        sql = "SELECT * FROM employees WHERE name = ?"
+        CURSOR.execute(sql, (name,))
+        row = CURSOR.fetchone()
+        if row:
+            return cls.instance_from_db(row)
+        return None
